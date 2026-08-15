@@ -1,0 +1,13 @@
+# Нормализация переводов строк в индексе. В рабочем дереве Windows их вернёт core.autocrlf.
+* text=auto
+
+*.cs      text diff=csharp
+*.xaml    text
+*.csproj  text
+*.sln     text eol=crlf
+*.md      text
+*.json    text
+
+*.ico     binary
+*.srs     binary
+*.png     binary
