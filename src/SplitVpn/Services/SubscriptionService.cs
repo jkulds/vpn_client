@@ -173,53 +173,63 @@ public sealed class SubscriptionService
         return Preview(text);
     }
 
-    private static void Parse(string body, Subscription sub, SubscriptionFetchResult result)
+    /// <summary>
+    /// Разбирает текст в любом поддерживаемом формате: список ссылок, base64 от него,
+    /// JSON-конфиг sing-box или Xray. Общий вход для тела подписки и для окна импорта -
+    /// иначе вставленный в окно конфиг отвергался как «неподдерживаемая схема».
+    /// </summary>
+    public static IReadOnlyList<ProxyProfile> ParseText(
+        string body, out SubscriptionFormat format, out List<string> errors, out string? fatalError)
     {
-        var (format, payload) = Detect(body);
-        result.Format = format;
+        fatalError = null;
 
-        switch (format)
+        var (detected, payload) = Detect(body);
+        format = detected;
+
+        switch (detected)
         {
             case SubscriptionFormat.ShareLinks:
             case SubscriptionFormat.Base64ShareLinks:
-            {
-                var parsed = ShareLinkParser.ParseMany(payload, out var errors);
-                Report(result, errors);
-
-                foreach (var p in parsed)
-                {
-                    p.SubscriptionId = sub.Id;
-                    result.Profiles.Add(p);
-                }
-                break;
-            }
+                return ShareLinkParser.ParseMany(payload, out errors);
 
             case SubscriptionFormat.SingBoxJson:
+                return SingBoxOutboundReader.Parse(payload, out errors);
+
             case SubscriptionFormat.XrayJson:
-            {
-                var parsed = format == SubscriptionFormat.XrayJson
-                    ? XrayOutboundReader.Parse(payload, out var errors)
-                    : SingBoxOutboundReader.Parse(payload, out errors);
-
-                Report(result, errors);
-
-                foreach (var p in parsed)
-                {
-                    p.SubscriptionId = sub.Id;
-                    result.Profiles.Add(p);
-                }
-                break;
-            }
+                return XrayOutboundReader.Parse(payload, out errors);
 
             case SubscriptionFormat.ClashYaml:
-                result.FatalError =
-                    "подписка отдана в формате Clash YAML, он не поддерживается. " +
-                    "Запросите у провайдера ссылку в формате v2ray (список ссылок) или sing-box.";
-                return;
+                errors = new List<string>();
+                fatalError = "формат Clash YAML не поддерживается. Нужен список ссылок (v2ray) " +
+                             "либо JSON-конфиг sing-box или Xray.";
+                return Array.Empty<ProxyProfile>();
 
             default:
-                result.FatalError = $"формат ответа не распознан. Начало тела: {Preview(body)}";
-                return;
+                errors = new List<string>();
+                fatalError = $"формат не распознан. Начало текста: {Preview(body)}";
+                return Array.Empty<ProxyProfile>();
+        }
+    }
+
+    private static void Parse(string body, Subscription sub, SubscriptionFetchResult result)
+    {
+        var parsed = ParseText(body, out var format, out var errors, out var fatal);
+        result.Format = format;
+        Report(result, errors);
+
+        if (fatal is not null)
+        {
+            result.FatalError = format == SubscriptionFormat.ClashYaml
+                ? "подписка отдана в формате Clash YAML, он не поддерживается. " +
+                  "Запросите у провайдера ссылку в формате v2ray (список ссылок) или sing-box."
+                : $"формат ответа не распознан. Начало тела: {Preview(body)}";
+            return;
+        }
+
+        foreach (var p in parsed)
+        {
+            p.SubscriptionId = sub.Id;
+            result.Profiles.Add(p);
         }
 
         if (result.Profiles.Count == 0)

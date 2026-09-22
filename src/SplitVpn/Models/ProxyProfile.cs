@@ -73,7 +73,10 @@ public sealed class ProxyProfile : NotifyBase
         }
     }
 
-    /// <summary>Заголовок группы в списках. Проставляется из имени подписки, в settings.json не пишется.</summary>
+    /// <summary>
+    /// Заголовок группы в списках: имя подписки, а у серверов без подписки - <see cref="GroupName"/>
+    /// либо <see cref="ManualGroup"/>. В settings.json не пишется, проставляется при загрузке.
+    /// </summary>
     [JsonIgnore]
     public string SubscriptionName
     {
@@ -83,7 +86,14 @@ public sealed class ProxyProfile : NotifyBase
 
     private string _subscriptionName = ManualGroup;
 
-    public const string ManualGroup = "Добавлено вручную";
+    /// <summary>
+    /// Группа для серверов, добавленных ссылкой или конфигом, а не подпиской. Задаётся при импорте:
+    /// без неё все такие серверы сваливались в одну кучу «добавлено вручную», и провайдера
+    /// было не отличить от провайдера.
+    /// </summary>
+    public string? GroupName { get; set; }
+
+    public const string ManualGroup = "Импортированные ссылки";
 
     /// <summary>
     /// Готовый конфиг Xray из подписки. Если заполнен, сервер обслуживается сайдкаром Xray,

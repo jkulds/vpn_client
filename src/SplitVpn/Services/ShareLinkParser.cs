@@ -172,7 +172,7 @@ public static class ShareLinkParser
             Uuid = Str("id"),
             AlterId = int.TryParse(Str("aid"), out var aid) ? aid : 0,
             VmessSecurity = NullIfEmpty(Str("scy")) ?? "auto",
-            Network = NullIfEmpty(Str("net")) ?? "tcp"
+            Network = NormalizeNetwork(Str("net"))
         };
 
         var host = Str("host");
@@ -181,15 +181,13 @@ public static class ShareLinkParser
         switch (p.Network)
         {
             case "ws":
+            case "httpupgrade":
+            case "http":
                 p.WsPath = NullIfEmpty(path) ?? "/";
                 p.WsHost = NullIfEmpty(host);
                 break;
             case "grpc":
                 p.GrpcServiceName = NullIfEmpty(path);
-                break;
-            case "httpupgrade":
-                p.WsPath = NullIfEmpty(path) ?? "/";
-                p.WsHost = NullIfEmpty(host);
                 break;
         }
 
@@ -253,12 +251,13 @@ public static class ShareLinkParser
 
     private static void ApplyTransport(ProxyProfile p, NameValueCollection q)
     {
-        p.Network = NullIfEmpty(q["type"]) ?? "tcp";
+        p.Network = NormalizeNetwork(q["type"]);
 
         switch (p.Network)
         {
             case "ws":
             case "httpupgrade":
+            case "http":
             {
                 var path = NullIfEmpty(q["path"]) ?? "/";
                 // ?ed=N внутри path - это max_early_data, отдельное поле в sing-box.
@@ -297,6 +296,16 @@ public static class ShareLinkParser
             p.RealityShortId = NullIfEmpty(q["sid"]);
             p.AllowInsecure = false;
         }
+    }
+
+    /// <summary>
+    /// Xray переименовал транспорт tcp в raw (с 24.9.30), а в ссылках и в sing-box он по-прежнему tcp.
+    /// Пустое значение и none тоже означают голый TCP.
+    /// </summary>
+    public static string NormalizeNetwork(string? network)
+    {
+        var n = (network ?? "").Trim().ToLowerInvariant();
+        return n is "" or "raw" or "none" ? "tcp" : n;
     }
 
     private static (string host, int port) SplitHostPort(string s)

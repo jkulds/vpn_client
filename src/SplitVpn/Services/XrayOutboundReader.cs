@@ -92,13 +92,20 @@ public static class XrayOutboundReader
         if (proxies.Count == 1 && protocol.StartsWith("hysteria", StringComparison.OrdinalIgnoreCase))
             return ReadHysteria(primary, remarks, index);
 
+        // Простой конфиг - один outbound на транспорте, который умеет sing-box, - разбирается
+        // в обычный профиль: без сайдкара сервер участвует в режиме «авто» и в замерах ядра,
+        // а xray.exe для него не нужен вовсе. Всё, чего sing-box не тянет (XHTTP, mKCP,
+        // HTTP-маскировка TCP, балансировщики), по-прежнему уходит сайдкару целиком.
+        if (proxies.Count == 1 && TryReadNative(primary, remarks, index, out var native))
+            return native;
+
         var p2 = new ProxyProfile
         {
             Name = remarks ?? Str(primary, "tag") ?? $"Xray #{index}",
             Protocol = protocol.ToLowerInvariant(),
             XrayConfigJson = config.GetRawText(),
             XrayHostCount = proxies.Count,
-            Network = NullIfEmpty(Str(Stream(primary), "network")) ?? "tcp"
+            Network = ShareLinkParser.NormalizeNetwork(Str(Stream(primary), "network"))
         };
 
         var (server, port) = Endpoint(primary, protocol);
@@ -149,6 +156,196 @@ public static class XrayOutboundReader
         if (string.IsNullOrWhiteSpace(p.Sni)) p.Sni = p.Server;
 
         return p;
+    }
+
+    /// <summary>Ключи streamSettings, смысл которых известен. Что-то сверх - лучше отдать сайдкару.</summary>
+    private static readonly HashSet<string> KnownStreamKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "network", "security", "tlsSettings", "realitySettings", "wsSettings", "grpcSettings",
+        "httpupgradeSettings", "httpSettings", "tcpSettings", "rawSettings", "sockopt"
+    };
+
+    /// <summary>
+    /// Пытается прочитать одиночный outbound Xray как нативный профиль sing-box.
+    /// false - конфиг требует сайдкара либо не разобран; тогда вызывающий код ничего не теряет.
+    /// </summary>
+    private static bool TryReadNative(JsonElement outbound, string? remarks, int index, out ProxyProfile? profile)
+    {
+        profile = null;
+
+        var protocol = (Str(outbound, "protocol") ?? "").ToLowerInvariant();
+        var settings = Obj(outbound, "settings");
+        var stream = Obj(outbound, "streamSettings");
+
+        if (stream.ValueKind == JsonValueKind.Object)
+            foreach (var prop in stream.EnumerateObject())
+                if (!KnownStreamKeys.Contains(prop.Name)) return false;
+
+        var network = ShareLinkParser.NormalizeNetwork(Str(stream, "network"));
+        if (network is not ("tcp" or "ws" or "grpc" or "httpupgrade" or "http")) return false;
+
+        // HTTP-маскировка поверх TCP (header.type=http) - вещь Xray, в sing-box её нет.
+        var tcp = Obj(stream, "tcpSettings");
+        if (tcp.ValueKind != JsonValueKind.Object) tcp = Obj(stream, "rawSettings");
+        var headerType = Str(Obj(tcp, "header"), "type");
+        if (headerType is not null && !headerType.Equals("none", StringComparison.OrdinalIgnoreCase)) return false;
+
+        var p = new ProxyProfile
+        {
+            Name = remarks ?? Str(outbound, "tag") ?? $"Xray #{index}",
+            Protocol = protocol,
+            Network = network
+        };
+
+        switch (protocol)
+        {
+            case "vless":
+            case "vmess":
+            {
+                var node = FirstObject(settings, "vnext");
+                var user = FirstObject(node, "users");
+                if (node.ValueKind != JsonValueKind.Object || user.ValueKind != JsonValueKind.Object) return false;
+
+                p.Server = Str(node, "address") ?? "";
+                p.ServerPort = Int(node, "port");
+                p.Uuid = Str(user, "id");
+
+                if (protocol == "vless")
+                {
+                    p.Flow = NullIfEmpty(Str(user, "flow"));
+                }
+                else
+                {
+                    p.VmessSecurity = NullIfEmpty(Str(user, "security")) ?? "auto";
+                    p.AlterId = Int(user, "alterId");
+                }
+                break;
+            }
+
+            case "trojan":
+            case "shadowsocks":
+            {
+                var node = FirstObject(settings, "servers");
+                if (node.ValueKind != JsonValueKind.Object) return false;
+
+                p.Server = Str(node, "address") ?? "";
+                p.ServerPort = Int(node, "port");
+                p.Password = Str(node, "password");
+                if (protocol == "shadowsocks") p.Method = Str(node, "method");
+                break;
+            }
+
+            default:
+                return false;
+        }
+
+        if (string.IsNullOrWhiteSpace(p.Server) || p.ServerPort <= 0 ||
+            (protocol is "vless" or "vmess" && string.IsNullOrWhiteSpace(p.Uuid)))
+            return false;
+
+        switch (network)
+        {
+            case "ws":
+            {
+                var ws = Obj(stream, "wsSettings");
+                p.WsPath = NullIfEmpty(Str(ws, "path")) ?? "/";
+                p.WsHost = NullIfEmpty(Str(ws, "host")) ?? NullIfEmpty(Str(Obj(ws, "headers"), "Host"));
+                break;
+            }
+
+            case "httpupgrade":
+            {
+                var hu = Obj(stream, "httpupgradeSettings");
+                p.WsPath = NullIfEmpty(Str(hu, "path")) ?? "/";
+                p.WsHost = NullIfEmpty(Str(hu, "host"));
+                break;
+            }
+
+            case "http":
+            {
+                var h = Obj(stream, "httpSettings");
+                p.WsPath = NullIfEmpty(Str(h, "path")) ?? "/";
+                p.WsHost = FirstString(h, "host");
+                break;
+            }
+
+            case "grpc":
+                p.GrpcServiceName = NullIfEmpty(Str(Obj(stream, "grpcSettings"), "serviceName"));
+                break;
+        }
+
+        var security = (Str(stream, "security") ?? "none").ToLowerInvariant();
+        p.TlsEnabled = security is "tls" or "reality";
+        p.RealityEnabled = security == "reality";
+
+        if (p.RealityEnabled)
+        {
+            var reality = Obj(stream, "realitySettings");
+            p.Sni = NullIfEmpty(Str(reality, "serverName")) ?? p.Server;
+            p.Fingerprint = NullIfEmpty(Str(reality, "fingerprint"));
+            // Xray 25.x переименовал publicKey в password - встречаются оба варианта.
+            p.RealityPublicKey = NullIfEmpty(Str(reality, "publicKey")) ?? NullIfEmpty(Str(reality, "password"));
+            p.RealityShortId = NullIfEmpty(Str(reality, "shortId"));
+            if (string.IsNullOrWhiteSpace(p.RealityPublicKey)) return false;
+        }
+        else if (p.TlsEnabled)
+        {
+            var tls = Obj(stream, "tlsSettings");
+            p.Sni = NullIfEmpty(Str(tls, "serverName")) ?? p.WsHost ?? p.Server;
+            p.Fingerprint = NullIfEmpty(Str(tls, "fingerprint"));
+            p.AllowInsecure = Bool(tls, "allowInsecure");
+            p.Alpn = StringArray(tls, "alpn");
+        }
+        else if (protocol == "trojan")
+        {
+            // У trojan TLS включён всегда, даже если security не указан.
+            p.TlsEnabled = true;
+            p.Sni = p.Server;
+        }
+
+        profile = p;
+        return true;
+    }
+
+    private static JsonElement FirstObject(JsonElement parent, string arrayName)
+    {
+        if (parent.ValueKind != JsonValueKind.Object ||
+            !parent.TryGetProperty(arrayName, out var arr) || arr.ValueKind != JsonValueKind.Array)
+            return default;
+
+        foreach (var item in arr.EnumerateArray())
+            if (item.ValueKind == JsonValueKind.Object) return item;
+
+        return default;
+    }
+
+    /// <summary>Поле, которое у Xray бывает и строкой, и массивом строк (host у httpSettings).</summary>
+    private static string? FirstString(JsonElement parent, string name)
+    {
+        if (parent.ValueKind != JsonValueKind.Object || !parent.TryGetProperty(name, out var v)) return null;
+
+        if (v.ValueKind == JsonValueKind.String) return NullIfEmpty(v.GetString());
+
+        if (v.ValueKind == JsonValueKind.Array)
+            foreach (var item in v.EnumerateArray())
+                if (item.ValueKind == JsonValueKind.String && NullIfEmpty(item.GetString()) is { } s) return s;
+
+        return null;
+    }
+
+    private static string[]? StringArray(JsonElement parent, string name)
+    {
+        if (parent.ValueKind != JsonValueKind.Object ||
+            !parent.TryGetProperty(name, out var v) || v.ValueKind != JsonValueKind.Array)
+            return null;
+
+        var list = v.EnumerateArray()
+            .Where(a => a.ValueKind == JsonValueKind.String)
+            .Select(a => a.GetString() ?? "")
+            .Where(a => a.Length > 0)
+            .ToArray();
+
+        return list.Length > 0 ? list : null;
     }
 
     private static JsonElement Obj(JsonElement parent, string name) =>

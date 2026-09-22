@@ -28,7 +28,7 @@
                         PlaceholderText="https://..." Icon="{ui:SymbolIcon Link24}" />
 
             <ui:InfoBar IsOpen="True" IsClosable="False" Severity="Informational" Margin="0,16,0,0"
-                        Message="Поддерживается список share-ссылок (текстом или base64) и JSON-конфиг sing-box. Clash YAML не поддерживается." />
+                        Message="Поддерживается список share-ссылок (текстом или base64), JSON-конфиг sing-box и JSON-конфиг Xray. Clash YAML не поддерживается." />
 
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,18,0,0">
                 <ui:Button Content="Добавить" Appearance="Primary" IsDefault="True" Click="OnOk"

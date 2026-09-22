@@ -10,7 +10,13 @@ public sealed record ConfigBuildResult(
     string ClashSecret,
     IReadOnlyList<string> Warnings,
     /// <summary>Id профиля -> tag outbound'а. По этим именам сервер зовётся в clash_api.</summary>
-    IReadOnlyDictionary<string, string> TagByProfileId);
+    IReadOnlyDictionary<string, string> TagByProfileId,
+    /// <summary>
+    /// Имя канала -> tag, записанный ему как default. После запуска ядра выбор надо
+    /// переприменить через clash_api: с включённым cache_file ядро восстанавливает
+    /// прошлый выбор selector'а из cache.db поверх default.
+    /// </summary>
+    IReadOnlyDictionary<string, string> ChannelDefaults);
 
 /// <summary>
 /// Собирает config.json для sing-box из настроек приложения.
@@ -106,7 +112,7 @@ public sealed class SingBoxConfigBuilder
             },
             ["dns"] = BuildDns(s, channelNames, defaultOutbound),
             ["inbounds"] = BuildInbounds(s),
-            ["outbounds"] = BuildOutbounds(s, tagByProfileId, warnings, out var usableProfileIds),
+            ["outbounds"] = BuildOutbounds(s, tagByProfileId, warnings, out var usableProfileIds, out var channelDefaults),
             ["route"] = BuildRoute(s, channelNames, defaultOutbound, warnings),
             ["experimental"] = new JsonObject
             {
@@ -131,7 +137,7 @@ public sealed class SingBoxConfigBuilder
             .Where(kv => usableProfileIds.Contains(kv.Key))
             .ToDictionary(kv => kv.Key, kv => kv.Value);
 
-        return new ConfigBuildResult(json, secret, warnings, actualTags);
+        return new ConfigBuildResult(json, secret, warnings, actualTags, channelDefaults);
     }
 
     // ---------- inbounds ----------
@@ -173,12 +179,18 @@ public sealed class SingBoxConfigBuilder
 
     // ---------- outbounds ----------
 
-    private JsonArray BuildOutbounds(AppSettings s, Dictionary<string, string> tagByProfileId, List<string> warnings, out HashSet<string> usableProfileIds)
+    private JsonArray BuildOutbounds(
+        AppSettings s,
+        Dictionary<string, string> tagByProfileId,
+        List<string> warnings,
+        out HashSet<string> usableProfileIds,
+        out Dictionary<string, string> channelDefaults)
     {
         var arr = new JsonArray();
 
         var usable = new HashSet<string>();
         usableProfileIds = usable;
+        channelDefaults = new Dictionary<string, string>();
 
         var selectedKeys = s.Channels
             .Where(c => !c.AutoFastest)
@@ -238,11 +250,12 @@ public sealed class SingBoxConfigBuilder
         {
             if (string.IsNullOrWhiteSpace(ch.Name)) continue;
 
-            var members = s.Profiles
+            var memberProfiles = s.Profiles
                 .Where(p => ch.RestrictToSubscriptionId is null || p.SubscriptionId == ch.RestrictToSubscriptionId)
                 .Where(p => usable.Contains(p.Id))
-                .Select(p => tagByProfileId[p.Id])
                 .ToList();
+
+            var members = memberProfiles.Select(p => tagByProfileId[p.Id]).ToList();
 
             if (members.Count == 0)
             {
@@ -253,8 +266,7 @@ public sealed class SingBoxConfigBuilder
             var group = new JsonObject
             {
                 ["type"] = ch.AutoFastest ? "urltest" : "selector",
-                ["tag"] = ch.Name,
-                ["outbounds"] = new JsonArray(members.Select(m => (JsonNode)m!).ToArray())
+                ["tag"] = ch.Name
             };
 
             if (ch.AutoFastest)
@@ -265,33 +277,16 @@ public sealed class SingBoxConfigBuilder
             }
             else
             {
-                var selected = s.Profiles.FirstOrDefault(p => p.StableKey == ch.SelectedProfileKey);
+                var chosen = ResolveChannelDefault(ch, s, memberProfiles, tagByProfileId, warnings);
 
-                if (selected is not null && usable.Contains(selected.Id) &&
-                    tagByProfileId.TryGetValue(selected.Id, out var tag))
-                {
-                    group["default"] = tag;
-                }
-                else if (selected is not null)
-                {
-                    CoreCapabilities.IsSupported(selected, out var reason);
+                if (chosen == RouteTargets.Direct && !members.Contains(RouteTargets.Direct))
+                    members.Add(RouteTargets.Direct);
 
-                    // Причин две и они разные: сервер вообще не поддерживается либо
-                    // поддерживается, но через сайдкар, который не поднялся.
-                    var why = reason
-                              ?? (selected.UsesXray
-                                  ? "нужен сайдкар Xray, а он не запущен"
-                                  : "причина не определена");
-
-                    warnings.Add($"Канал '{ch.Name}': сервер '{selected.Name}' не подошёл ({why}), " +
-                                 "взят первый доступный.");
-                }
-                else if (ch.SelectedProfileKey is { Length: > 0 })
-                {
-                    warnings.Add($"Канал '{ch.Name}': выбранный сервер исчез из подписки, взят первый доступный.");
-                }
+                group["default"] = chosen;
+                channelDefaults[ch.Name] = chosen;
             }
 
+            group["outbounds"] = new JsonArray(members.Select(m => (JsonNode)m!).ToArray());
             arr.Add(group);
         }
 
@@ -304,6 +299,66 @@ public sealed class SingBoxConfigBuilder
         }
 
         return arr;
+    }
+
+    /// <summary>
+    /// Сервер, который канал получит как default: выбранный, если он попал в конфиг; иначе сервер
+    /// той же подписки - это хотя бы тот же провайдер; иначе прямое соединение.
+    /// </summary>
+    /// <remarks>
+    /// Раньше при пропаже выбранного сервера default не писался, и ядро брало первый outbound
+    /// списка. Список у всех каналов общий, поэтому канал по умолчанию мог уехать на сервер,
+    /// заведённый ради одного сайта, и весь трафик шёл через него незаметно. Прямое соединение
+    /// заметно сразу, чужой сервер - нет.
+    /// </remarks>
+    private static string ResolveChannelDefault(
+        Channel ch,
+        AppSettings s,
+        List<ProxyProfile> memberProfiles,
+        Dictionary<string, string> tagByProfileId,
+        List<string> warnings)
+    {
+        var selected = s.Profiles.FirstOrDefault(p => p.StableKey == ch.SelectedProfileKey);
+
+        if (selected is not null && memberProfiles.Contains(selected))
+            return tagByProfileId[selected.Id];
+
+        string problem;
+
+        if (selected is not null)
+        {
+            CoreCapabilities.IsSupported(selected, out var reason);
+
+            // Причин две и они разные: сервер вообще не поддерживается либо
+            // поддерживается, но через сайдкар, который не поднялся.
+            var why = reason
+                      ?? (selected.UsesXray
+                          ? "нужен сайдкар Xray, а он не запущен"
+                          : "причина не определена");
+
+            problem = $"сервер '{selected.Name}' не подошёл ({why})";
+        }
+        else if (ch.SelectedProfileKey is { Length: > 0 })
+        {
+            problem = "выбранный сервер исчез из подписки";
+        }
+        else
+        {
+            problem = "сервер не выбран";
+        }
+
+        var sameProvider = selected?.SubscriptionId is null
+            ? null
+            : memberProfiles.FirstOrDefault(p => p.SubscriptionId == selected.SubscriptionId);
+
+        if (sameProvider is not null)
+        {
+            warnings.Add($"Канал '{ch.Name}': {problem}, временно взят '{sameProvider.Name}' из той же подписки.");
+            return tagByProfileId[sameProvider.Id];
+        }
+
+        warnings.Add($"Канал '{ch.Name}': {problem}. Канал пущен напрямую, пока не выбран другой сервер.");
+        return RouteTargets.Direct;
     }
 
     private static JsonObject? BuildProfileOutbound(ProxyProfile p, string tag)
@@ -482,6 +537,22 @@ public sealed class SingBoxConfigBuilder
                     ["type"] = "grpc",
                     ["service_name"] = p.GrpcServiceName ?? ""
                 };
+
+            // HTTP/2-транспорт: в ссылках type=http, у Xray httpSettings. Без этой ветки
+            // outbound собирался бы голым TCP, хотя транспорт значится поддерживаемым.
+            case "http":
+            {
+                var t = new JsonObject
+                {
+                    ["type"] = "http",
+                    ["path"] = string.IsNullOrWhiteSpace(p.WsPath) ? "/" : p.WsPath
+                };
+                if (!string.IsNullOrWhiteSpace(p.WsHost)) t["host"] = new JsonArray(p.WsHost);
+                return t;
+            }
+
+            case "quic":
+                return new JsonObject { ["type"] = "quic" };
 
             default:
                 return null;

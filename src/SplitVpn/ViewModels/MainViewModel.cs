@@ -27,9 +27,18 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
     private readonly DispatcherTimer _logTimer;
     private readonly CancellationTokenSource _shutdown = new();
 
+    /// <summary>
+    /// Подключение могут запросить одновременно кнопка, смена сервера в канале и обновление
+    /// подписки. Без очереди второй запуск натыкался на «ядро уже запущено», а два перезапуска
+    /// подряд гоняли сайдкары впустую.
+    /// </summary>
+    private readonly SemaphoreSlim _connectGate = new(1, 1);
+
     private bool _isRunning;
     private string _status = "Отключено";
     private string _logText = "";
+    private string _configWarnings = "";
+    private bool _showConfigWarnings;
     private Subscription? _selectedSubscription;
     private ProxyProfile? _selectedProfile;
     private string _coreVersion = "ядро не проверено";
@@ -150,6 +159,14 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
 
     public string ConnectButtonText => IsRunning ? "Отключить" : "Подключить";
     public string Status { get => _status; private set => Set(ref _status, value); }
+
+    /// <summary>
+    /// Оговорки последней сборки конфига: пропущенный сервер, канал на подмене или напрямую.
+    /// В журнале такие строки тонут, а от них зависит, куда на самом деле идёт трафик.
+    /// </summary>
+    public string ConfigWarnings { get => _configWarnings; private set => Set(ref _configWarnings, value); }
+
+    public bool ShowConfigWarnings { get => _showConfigWarnings; set => Set(ref _showConfigWarnings, value); }
     public string CoreVersion { get => _coreVersion; private set => Set(ref _coreVersion, value); }
     public string LogText { get => _logText; private set => Set(ref _logText, value); }
 
@@ -229,7 +246,11 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
         _ = UpdateSubscriptionsAsync(force: true, only: new[] { sub });
     }
 
-    public void ImportLinks(string text)
+    /// <summary>
+    /// Импорт вставленного текста: ссылки, base64 от них, JSON-конфиг sing-box или Xray.
+    /// Группа - заголовок в списке серверов; без неё всё импортированное сваливалось в одну кучу.
+    /// </summary>
+    public void ImportLinks(string text, string? groupName = null)
     {
         if (LooksLikeSubscriptionUrl(text, out var url))
         {
@@ -244,18 +265,29 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
             }
         }
 
-        var parsed = ShareLinkParser.ParseMany(text, out var errors);
+        var parsed = SubscriptionService.ParseText(text, out var format, out var errors, out var fatal);
+
+        if (fatal is not null)
+        {
+            AppendLog($"[импорт] {fatal}");
+            MessageBox.Show(fatal, "Импорт", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var group = string.IsNullOrWhiteSpace(groupName) ? null : groupName.Trim();
 
         var added = 0;
         foreach (var p in parsed)
         {
+            p.GroupName = group;
             if (Settings.Profiles.Any(x => x.StableKey == p.StableKey)) continue;
             Settings.Profiles.Add(p);
             added++;
         }
 
         foreach (var e in errors) AppendLog($"[импорт] {e}");
-        AppendLog($"[импорт] добавлено серверов: {added} из {parsed.Count} распознанных");
+        AppendLog($"[импорт] {FormatLabel(format)}: добавлено серверов {added} из {parsed.Count} распознанных" +
+                  (group is null ? "" : $", группа '{group}'"));
 
         RefreshChannels();
 
@@ -267,6 +299,15 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
 
         Save();
     }
+
+    private static string FormatLabel(SubscriptionFormat format) => format switch
+    {
+        SubscriptionFormat.ShareLinks => "ссылки",
+        SubscriptionFormat.Base64ShareLinks => "ссылки в base64",
+        SubscriptionFormat.SingBoxJson => "JSON sing-box",
+        SubscriptionFormat.XrayJson => "JSON Xray",
+        _ => format.ToString()
+    };
 
     private static bool LooksLikeSubscriptionUrl(string text, out string url)
     {
@@ -334,8 +375,7 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
         if (changed && IsRunning && Settings.RestartAfterSubscriptionUpdate)
         {
             AppendLog("[подписки] состав серверов изменился, перезапускаю ядро");
-            await Task.Run(() => { _core.Stop(); _xray.StopAll(); }).ConfigureAwait(false);
-            await ConnectAsync().ConfigureAwait(false);
+            await RestartCoreAsync().ConfigureAwait(false);
         }
     }
 
@@ -350,11 +390,19 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
             .Select(p => p.StableKey)
             .ToHashSet();
 
-        for (var i = Settings.Profiles.Count - 1; i >= 0; i--)
-            if (Settings.Profiles[i].SubscriptionId == sub.Id)
-                Settings.Profiles.RemoveAt(i);
+        var insertAt = -1;
 
-        foreach (var p in fresh) Settings.Profiles.Add(p);
+        for (var i = Settings.Profiles.Count - 1; i >= 0; i--)
+        {
+            if (Settings.Profiles[i].SubscriptionId != sub.Id) continue;
+            Settings.Profiles.RemoveAt(i);
+            insertAt = i;
+        }
+
+        // Свежие серверы встают на место старых, а не в конец: иначе после каждого обновления
+        // группы в списке перетасовывались, а с ними и порядок outbound'ов в конфиге.
+        if (insertAt < 0) insertAt = Settings.Profiles.Count;
+        for (var j = 0; j < fresh.Count; j++) Settings.Profiles.Insert(insertAt + j, fresh[j]);
 
         foreach (var ch in Settings.Channels)
         {
@@ -461,7 +509,8 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
                 ? null
                 : Settings.Subscriptions.FirstOrDefault(s => s.Id == p.SubscriptionId);
 
-            p.SubscriptionName = sub?.Name ?? ProxyProfile.ManualGroup;
+            p.SubscriptionName = sub?.Name
+                                 ?? (string.IsNullOrWhiteSpace(p.GroupName) ? ProxyProfile.ManualGroup : p.GroupName.Trim());
 
             // Порядок важен: признак сайдкара влияет на вывод о поддержке.
             p.NeedsSynthesizedXray =
@@ -520,14 +569,57 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
         if (restartNeeded.Count == 0) return;
 
         AppendLog($"[канал] на лету не применить ({string.Join(", ", restartNeeded)}) - перезапускаю ядро");
-
-        await Task.Run(() => { _core.Stop(); _xray.StopAll(); }).ConfigureAwait(false);
-        await ConnectAsync().ConfigureAwait(false);
+        await RestartCoreAsync().ConfigureAwait(false);
     }
 
     // ---------- запуск ядра ----------
 
     private async Task ConnectAsync()
+    {
+        try
+        {
+            await _connectGate.WaitAsync(_shutdown.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_core.IsRunning) return;
+            await ConnectCoreAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _connectGate.Release();
+        }
+    }
+
+    /// <summary>Остановка и запуск одной операцией, чтобы между ними не вклинился другой запуск.</summary>
+    private async Task RestartCoreAsync()
+    {
+        try
+        {
+            await _connectGate.WaitAsync(_shutdown.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        try
+        {
+            await Task.Run(() => { _core.Stop(); _xray.StopAll(); }).ConfigureAwait(false);
+            await ConnectCoreAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _connectGate.Release();
+        }
+    }
+
+    private async Task ConnectCoreAsync()
     {
         var corePath = CoreProcessService.ResolveCorePath(Settings.CorePath);
         if (!File.Exists(corePath))
@@ -555,6 +647,12 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
 
         foreach (var w in build.Warnings) AppendLog($"[конфиг] {w}");
 
+        Dispatch(() =>
+        {
+            ConfigWarnings = string.Join("\n", build.Warnings);
+            ShowConfigWarnings = build.Warnings.Count > 0;
+        });
+
         Directory.CreateDirectory(SettingsStore.CoreDir);
         await File.WriteAllTextAsync(SettingsStore.ConfigPath, build.Json, _shutdown.Token).ConfigureAwait(false);
 
@@ -576,12 +674,15 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
         _clash.Secret = build.ClashSecret;
         _tagByProfileId = build.TagByProfileId;
 
+        var started = false;
+
         Dispatch(() =>
         {
             try
             {
                 _core.Start(corePath, SettingsStore.ConfigPath, SettingsStore.CoreDir);
                 AppendLog("[ядро] запущено");
+                started = true;
             }
             catch (Exception ex)
             {
@@ -589,6 +690,38 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
                 Status = "Ошибка запуска";
             }
         });
+
+        if (started) await ApplyChannelDefaultsAsync(build.ChannelDefaults).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Сверяет выбор серверов в каналах с тем, что ядро выбрало на самом деле, и поправляет.
+    /// default в конфиге - не гарантия: с включённым cache_file ядро восстанавливает прошлый
+    /// выбор selector'а из cache.db поверх default, и после перезапуска канал молча уезжал
+    /// на другой сервер - в том числе на заведённый ради одного сайта.
+    /// </summary>
+    private async Task ApplyChannelDefaultsAsync(IReadOnlyDictionary<string, string> defaults)
+    {
+        if (defaults.Count == 0) return;
+
+        if (!await _clash.WaitReadyAsync(TimeSpan.FromSeconds(10), _shutdown.Token).ConfigureAwait(false))
+        {
+            if (!_shutdown.IsCancellationRequested)
+                AppendLog("[!] clash_api не ответило за 10 с: выбор серверов в каналах не сверен с ядром");
+            return;
+        }
+
+        foreach (var (channel, tag) in defaults)
+        {
+            var now = await _clash.GetSelectedAsync(channel, _shutdown.Token).ConfigureAwait(false);
+            if (now is null || now == tag) continue;
+
+            var ok = await _clash.SelectAsync(channel, tag, _shutdown.Token).ConfigureAwait(false);
+
+            AppendLog(ok
+                ? $"[канал] '{channel}': ядро восстановило '{now}' из кеша, переключено на '{tag}'"
+                : $"[!] канал '{channel}': ядро держит '{now}' вместо '{tag}', переключить не удалось");
+        }
     }
 
     /// <summary>
@@ -1027,5 +1160,6 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
         _core.Dispose();
         _xray.Dispose();
         _shutdown.Dispose();
+        _connectGate.Dispose();
     }
 }

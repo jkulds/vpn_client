@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Windows;
+using SplitVpn.Models;
 using SplitVpn.Services;
 using SplitVpn.ViewModels;
 
@@ -32,6 +33,10 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
         _tray.ExitRequested += () => Dispatcher.Invoke(ExitApplication);
 
         _tray.Update(_vm.IsRunning, _vm.Status);
+
+        // Повторный запуск ярлыка при живом экземпляре теперь не плодит второе окно,
+        // а поднимает это из трея.
+        App.ShowRequested += RestoreFromTray;
 
         StateChanged += OnStateChanged;
     }
@@ -88,11 +93,14 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
     {
         var dialog = new TextInputWindow(
             "Импорт серверов",
-            "Вставьте ссылки vless:// / vmess:// / trojan:// / ss:// / hysteria2://, по одной в строке:",
-            multiline: true) { Owner = this };
+            "Вставьте ссылки vless:// / vmess:// / trojan:// / ss:// / hysteria2:// по одной в строке " +
+            "либо JSON-конфиг sing-box или Xray целиком (можно в base64):",
+            multiline: true,
+            secondaryLabel: "Группа в списке серверов, например имя провайдера (необязательно)",
+            secondaryPlaceholder: ProxyProfile.ManualGroup) { Owner = this };
 
         if (dialog.ShowDialog() == true && !string.IsNullOrWhiteSpace(dialog.Value))
-            _vm.ImportLinks(dialog.Value);
+            _vm.ImportLinks(dialog.Value, dialog.SecondaryValue);
     }
 
     private void OnAddSubscription()
@@ -142,6 +150,7 @@ public partial class MainWindow : Wpf.Ui.Controls.FluentWindow
             }
         }
 
+        App.ShowRequested -= RestoreFromTray;
         _tray.Dispose();
         _vm.Dispose();
         System.Windows.Application.Current.Shutdown();
