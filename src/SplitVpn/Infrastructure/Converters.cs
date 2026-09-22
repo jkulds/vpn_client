@@ -49,6 +49,27 @@ public sealed class BoolToVisibilityConverter : IValueConverter
         value is Visibility.Visible;
 }
 
+/// <summary>Цвет метки задержки по состоянию: ok / slow / bad / fail / unknown.</summary>
+public sealed class LatencyBrushConverter : IValueConverter
+{
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        var key = value?.ToString() switch
+        {
+            "ok" => "SystemFillColorSuccessBrush",
+            "slow" => "SystemFillColorCautionBrush",
+            "bad" => "SystemFillColorCautionBrush",
+            "fail" => "SystemFillColorCriticalBrush",
+            _ => "TextFillColorSecondaryBrush"
+        };
+
+        return System.Windows.Application.Current?.TryFindResource(key) ?? Binding.DoNothing;
+    }
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        Binding.DoNothing;
+}
+
 public sealed class InverseBoolToVisibilityConverter : IValueConverter
 {
     public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture) =>

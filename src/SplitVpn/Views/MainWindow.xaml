@@ -22,7 +22,7 @@
             </ui:TitleBar.Icon>
         </ui:TitleBar>
 
-        <Grid Grid.Row="1" Margin="16,4,16,16">
+        <Grid Grid.Row="1" Margin="10,2,10,10">
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
                 <RowDefinition Height="*" />
@@ -52,7 +52,7 @@
                                Command="{Binding DisconnectCommand}"
                                Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}" />
 
-                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="16,0,16,0">
+                    <StackPanel Grid.Column="1" VerticalAlignment="Center" Margin="12,0,12,0">
                         <StackPanel Orientation="Horizontal">
                             <ui:SymbolIcon Symbol="PlugConnected24" FontSize="16" Margin="0,0,6,0"
                                            Foreground="{DynamicResource SystemFillColorSuccessBrush}"
@@ -66,11 +66,11 @@
                     </StackPanel>
 
                     <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
-                        <ui:Button Margin="0,0,8,0" Icon="{ui:SymbolIcon Beaker24}"
+                        <ui:Button Margin="0,0,6,0" Icon="{ui:SymbolIcon Beaker24}"
                                    Content="Проверить конфиг" Command="{Binding CheckConfigCommand}" />
-                        <ui:Button Margin="0,0,8,0" Icon="{ui:SymbolIcon Router24}"
+                        <ui:Button Margin="0,0,6,0" Icon="{ui:SymbolIcon Router24}"
                                    Content="Маршрутизация" Command="{Binding OpenRoutingCommand}" />
-                        <ui:Button Margin="0,0,8,0" Icon="{ui:SymbolIcon Folder24}"
+                        <ui:Button Margin="0,0,6,0" Icon="{ui:SymbolIcon Folder24}"
                                    ToolTip="Папка данных" Command="{Binding OpenConfigFolderCommand}" />
                         <ui:Button Icon="{ui:SymbolIcon DocumentText24}" Margin="0"
                                    ToolTip="Папка логов" Command="{Binding OpenLogFolderCommand}" />
@@ -82,7 +82,7 @@
             <Grid Grid.Row="1">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="1.25*" MinWidth="380" />
-                    <ColumnDefinition Width="16" />
+                    <ColumnDefinition Width="10" />
                     <ColumnDefinition Width="1*" MinWidth="330" />
                 </Grid.ColumnDefinitions>
 
@@ -97,12 +97,12 @@
                         <DockPanel>
                             <ui:TextBlock DockPanel.Dock="Top" Text="Подписки" Style="{StaticResource SectionTitle}" />
 
-                            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,10,0,0">
-                                <ui:Button Margin="0,0,8,0" Icon="{ui:SymbolIcon Add24}"
+                            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
+                                <ui:Button Margin="0,0,6,0" Icon="{ui:SymbolIcon Add24}"
                                            Content="Добавить" Command="{Binding AddSubscriptionCommand}" />
-                                <ui:Button Margin="0,0,8,0" Icon="{ui:SymbolIcon ArrowSync24}"
+                                <ui:Button Margin="0,0,6,0" Icon="{ui:SymbolIcon ArrowSync24}"
                                            Content="Обновить" Command="{Binding UpdateSelectedSubscriptionCommand}" />
-                                <ui:Button Margin="0,0,8,0" Icon="{ui:SymbolIcon Cloud24}"
+                                <ui:Button Margin="0,0,6,0" Icon="{ui:SymbolIcon Cloud24}"
                                            Content="Все" Command="{Binding UpdateAllSubscriptionsCommand}" />
                                 <ui:Button Icon="{ui:SymbolIcon Delete24}" Margin="0"
                                            Command="{Binding RemoveSubscriptionCommand}" ToolTip="Удалить подписку" />
@@ -113,10 +113,11 @@
                                      SelectedItem="{Binding SelectedSubscription}"
                                      Height="88"
                                      BorderThickness="0" Background="Transparent"
+                                     ItemContainerStyle="{StaticResource CompactListItem}"
                                      HorizontalContentAlignment="Stretch">
                                 <ListBox.ItemTemplate>
                                     <DataTemplate>
-                                        <Grid Margin="0,2">
+                                        <Grid Margin="0,1">
                                             <Grid.ColumnDefinitions>
                                                 <ColumnDefinition Width="Auto" />
                                                 <ColumnDefinition Width="*" />
@@ -155,12 +156,15 @@
                                 </StackPanel>
                             </Grid>
 
-                            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,10,0,0">
-                                <ui:Button Margin="0,0,8,0" Icon="{ui:SymbolIcon Link24}"
+                            <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" Margin="0,6,0,0">
+                                <ui:Button Margin="0,0,6,0" Icon="{ui:SymbolIcon Link24}"
                                            Content="Импорт ссылок" Command="{Binding ImportLinksCommand}" />
-                                <ui:Button Margin="0,0,8,0" Icon="{ui:SymbolIcon ArrowImport24}"
+                                <ui:Button Margin="0,0,6,0" Icon="{ui:SymbolIcon ArrowImport24}"
                                            Content="Из Happ" Command="{Binding ImportFromHappCommand}"
                                            ToolTip="Переносит правила маршрутизации из Happ. Серверы у Happ зашифрованы и не переносятся." />
+                                <ui:Button Margin="0,0,6,0" Icon="{ui:SymbolIcon Pulse24}"
+                                           Content="Проверить все" Command="{Binding CheckAllServersCommand}"
+                                           ToolTip="Замер задержки через ядро по каждому серверу. Доступно только при запущенном подключении." />
                                 <ui:Button Icon="{ui:SymbolIcon Delete24}" Margin="0"
                                            Command="{Binding RemoveProfileCommand}" ToolTip="Удалить сервер" />
                             </StackPanel>
@@ -170,6 +174,7 @@
                                      IsSynchronizedWithCurrentItem="False"
                                      MinHeight="90"
                                      BorderThickness="0" Background="Transparent"
+                                     ItemContainerStyle="{StaticResource CompactListItem}"
                                      HorizontalContentAlignment="Stretch">
                                 <ListBox.GroupStyle>
                                     <GroupStyle>
@@ -203,10 +208,10 @@
                                     <DataTemplate>
                                         <StackPanel Orientation="Horizontal"
                                                     ToolTip="{Binding UnsupportedReason}">
-                                            <ui:SymbolIcon Symbol="Server24" FontSize="14" Margin="0,0,8,0"
+                                            <ui:SymbolIcon Symbol="Server24" FontSize="14" Margin="0,0,6,0"
                                                            Foreground="{DynamicResource TextFillColorSecondaryBrush}"
                                                            Visibility="{Binding IsSupported, Converter={StaticResource BoolToVis}}" />
-                                            <ui:SymbolIcon Symbol="Warning24" FontSize="14" Margin="0,0,8,0"
+                                            <ui:SymbolIcon Symbol="Warning24" FontSize="14" Margin="0,0,6,0"
                                                            Foreground="{DynamicResource SystemFillColorCautionBrush}"
                                                            Visibility="{Binding IsSupported, Converter={StaticResource NotBoolToVis}}" />
                                             <TextBlock Text="{Binding Display}" VerticalAlignment="Center"
@@ -215,6 +220,9 @@
                                                        VerticalAlignment="Center"
                                                        Foreground="{DynamicResource SystemFillColorCautionBrush}"
                                                        FontSize="11" />
+                                            <TextBlock Text="{Binding LatencyText}" VerticalAlignment="Center"
+                                                       Margin="10,0,0,0" FontSize="11" FontWeight="SemiBold"
+                                                       Foreground="{Binding LatencyState, Converter={StaticResource LatencyBrush}}" />
                                         </StackPanel>
                                     </DataTemplate>
                                 </ListBox.ItemTemplate>
@@ -230,16 +238,17 @@
                         <Border Style="{StaticResource Card}">
                             <StackPanel>
                                 <ui:TextBlock Text="Каналы" Style="{StaticResource SectionTitle}" />
-                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,12"
+                                <TextBlock Style="{StaticResource Caption}" Margin="0,0,0,8"
                                            Text="Правила ссылаются на канал, а не на конкретный сервер. Меняете сервер в канале - правила остаются." />
 
                                 <ItemsControl ItemsSource="{Binding Channels}">
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <Grid Margin="0,0,0,8">
+                                            <Grid Margin="0,0,0,5">
                                                 <Grid.ColumnDefinitions>
                                                     <ColumnDefinition Width="88" />
                                                     <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="Auto" />
                                                     <ColumnDefinition Width="Auto" />
                                                 </Grid.ColumnDefinitions>
@@ -272,11 +281,18 @@
                                                     </ComboBox.ItemTemplate>
                                                 </ComboBox>
 
-                                                <CheckBox Grid.Column="2" Content="авто" IsChecked="{Binding AutoFastest}"
+                                                <TextBlock Grid.Column="2" Text="{Binding Selected.LatencyText}"
+                                                           VerticalAlignment="Center" Margin="0,0,6,0"
+                                                           FontSize="11" FontWeight="SemiBold" MinWidth="52"
+                                                           TextAlignment="Right"
+                                                           Foreground="{Binding Selected.LatencyState,
+                                                                        Converter={StaticResource LatencyBrush}}" />
+
+                                                <CheckBox Grid.Column="3" Content="авто" IsChecked="{Binding AutoFastest}"
                                                           VerticalAlignment="Center" Margin="0,0,6,0"
                                                           ToolTip="urltest: ядро само выбирает быстрейший сервер" />
 
-                                                <ui:Button Grid.Column="3" Icon="{ui:SymbolIcon Delete24}" Margin="0"
+                                                <ui:Button Grid.Column="4" Icon="{ui:SymbolIcon Delete24}" Margin="0"
                                                            Command="{Binding DataContext.RemoveChannelCommand,
                                                                      RelativeSource={RelativeSource AncestorType=Window}}"
                                                            CommandParameter="{Binding}" ToolTip="Удалить канал" />
@@ -287,7 +303,7 @@
 
                                 <ui:Button Icon="{ui:SymbolIcon Add24}" Content="Добавить канал"
                                            Command="{Binding AddChannelCommand}"
-                                           HorizontalAlignment="Left" Margin="0,4,0,0" />
+                                           HorizontalAlignment="Left" Margin="0,2,0,0" />
                             </StackPanel>
                         </Border>
 
@@ -305,36 +321,58 @@
                             <StackPanel>
                                 <ui:TextBlock Text="Ядро и параметры" Style="{StaticResource SectionTitle}" />
 
-                                <TextBlock Text="Путь к sing-box.exe" Style="{StaticResource Caption}" Margin="0,0,0,4" />
+                                <TextBlock Text="Путь к sing-box.exe" Style="{StaticResource Caption}" Margin="0,0,0,3" />
                                 <ui:TextBox Text="{Binding Settings.CorePath, UpdateSourceTrigger=LostFocus}"
                                             PlaceholderText="sing-box.exe" />
-                                <TextBlock Text="{Binding CoreVersion}" Style="{StaticResource Caption}" Margin="0,6,0,0" />
+                                <TextBlock Text="{Binding CoreVersion}" Style="{StaticResource Caption}" Margin="0,4,0,0" />
 
-                                <TextBlock Text="Путь к xray.exe" Style="{StaticResource Caption}" Margin="0,12,0,4"
+                                <TextBlock Text="Путь к xray.exe" Style="{StaticResource Caption}" Margin="0,8,0,3"
                                            ToolTip="Нужен только для серверов из подписок в формате конфига Xray: XHTTP и балансировщики sing-box не умеет." />
                                 <ui:TextBox Text="{Binding Settings.XrayPath, UpdateSourceTrigger=LostFocus}"
                                             PlaceholderText="xray.exe" />
 
-                                <Grid Margin="0,16,0,0">
+                                <Grid Margin="0,10,0,0">
                                     <TextBlock Text="Блокировать QUIC (UDP/443)" VerticalAlignment="Center"
                                                ToolTip="QUIC не сниффится, из-за чего домен-правила не работают в Chrome." />
                                     <ui:ToggleSwitch HorizontalAlignment="Right" IsChecked="{Binding Settings.BlockQuic}" />
                                 </Grid>
 
-                                <Grid Margin="0,10,0,0">
+                                <Grid Margin="0,7,0,0">
                                     <TextBlock Text="Только IPv4" VerticalAlignment="Center"
                                                ToolTip="IPv6 часто не завёрнут в туннель и течёт мимо правил." />
                                     <ui:ToggleSwitch HorizontalAlignment="Right" IsChecked="{Binding Settings.Ipv4Only}" />
                                 </Grid>
 
-                                <Grid Margin="0,10,0,0">
+                                <Grid Margin="0,7,0,0">
+                                    <TextBlock Text="Сворачивать в трей" VerticalAlignment="Center" />
+                                    <ui:ToggleSwitch HorizontalAlignment="Right" IsChecked="{Binding Settings.MinimizeToTray}" />
+                                </Grid>
+
+                                <Grid Margin="0,7,0,0">
+                                    <TextBlock Text="Закрытие прячет в трей" VerticalAlignment="Center"
+                                               TextWrapping="Wrap" MaxWidth="220" HorizontalAlignment="Left"
+                                               ToolTip="Ядро продолжает работать. Полный выход - через меню значка в трее." />
+                                    <ui:ToggleSwitch HorizontalAlignment="Right" IsChecked="{Binding Settings.CloseToTray}" />
+                                </Grid>
+
+                                <Grid Margin="0,7,0,0"
+                                      ToolTip="Замер идёт реальным запросом через туннель. 0 - не проверять.">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="80" />
+                                    </Grid.ColumnDefinitions>
+                                    <TextBlock Grid.Column="0" Text="Проверять каналы, сек" VerticalAlignment="Center" />
+                                    <ui:TextBox Grid.Column="1" Text="{Binding Settings.ChannelCheckSeconds}" />
+                                </Grid>
+
+                                <Grid Margin="0,7,0,0">
                                     <TextBlock Text="Перезапуск после обновления подписки" VerticalAlignment="Center"
                                                TextWrapping="Wrap" MaxWidth="220" HorizontalAlignment="Left" />
                                     <ui:ToggleSwitch HorizontalAlignment="Right"
                                                      IsChecked="{Binding Settings.RestartAfterSubscriptionUpdate}" />
                                 </Grid>
 
-                                <Grid Margin="0,16,0,0">
+                                <Grid Margin="0,10,0,0">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="80" />
@@ -343,7 +381,7 @@
                                     <ui:TextBox Grid.Column="1" Text="{Binding Settings.SubscriptionUpdateHours}" />
                                 </Grid>
 
-                                <Grid Margin="0,10,0,0">
+                                <Grid Margin="0,7,0,0">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="80" />
@@ -352,7 +390,7 @@
                                     <ui:TextBox Grid.Column="1" Text="{Binding Settings.MixedPort}" />
                                 </Grid>
 
-                                <Grid Margin="0,10,0,0"
+                                <Grid Margin="0,7,0,0"
                                       ToolTip="На info ядро пишет каждый DNS-ответ и каждое соединение - десятки строк в секунду.">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
@@ -366,7 +404,7 @@
 
                                 <ui:Button Icon="{ui:SymbolIcon Save24}" Content="Сохранить"
                                            Command="{Binding SaveCommand}"
-                                           HorizontalAlignment="Left" Margin="0,16,0,0" />
+                                           HorizontalAlignment="Left" Margin="0,10,0,0" />
                             </StackPanel>
                         </Border>
 
@@ -375,7 +413,7 @@
             </Grid>
 
             <!-- ============ Журнал ============ -->
-            <ui:CardExpander Grid.Row="2" Margin="0,4,0,0" IsExpanded="True">
+            <ui:CardExpander Grid.Row="2" Margin="0,2,0,0" IsExpanded="True" Padding="8">
                 <ui:CardExpander.Icon>
                     <ui:SymbolIcon Symbol="TextBulletListSquare24" />
                 </ui:CardExpander.Icon>
@@ -384,7 +422,7 @@
                 </ui:CardExpander.Header>
 
                 <TextBox x:Name="LogBox" Text="{Binding LogText, Mode=OneWay}"
-                         IsReadOnly="True" Height="118"
+                         IsReadOnly="True" Height="104"
                          FontFamily="Cascadia Mono, Consolas" FontSize="11"
                          VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto"
                          TextWrapping="NoWrap" BorderThickness="0"

@@ -38,9 +38,13 @@ public static class CoreCapabilities
             "vless", "vmess", "trojan", "shadowsocks", "socks", "http", "wireguard"
         };
 
+    /// <summary>Транспорт, который есть в Xray и отсутствует в sing-box.</summary>
+    public static bool IsXrayOnlyTransport(string? network) =>
+        network is not null && KnownGaps.ContainsKey(network);
+
     public static bool IsSupported(ProxyProfile profile, out string? reason)
     {
-        if (profile.RequiresXray)
+        if (profile.UsesXray)
         {
             if (!XrayProtocols.Contains(profile.Protocol))
             {

@@ -4,6 +4,7 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net9.0-windows</TargetFramework>
     <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>latest</LangVersion>
@@ -12,6 +13,9 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\app.ico</ApplicationIcon>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+    <!-- WFO0003: анализатор WinForms требует настраивать DPI своим API.
+         Окон WinForms здесь нет, только NotifyIcon, а DPI задаёт манифест для WPF. -->
+    <NoWarn>$(NoWarn);WFO0003</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -21,6 +25,13 @@
   <ItemGroup>
     <!-- Тот же файл как ресурс: ApplicationIcon даёт значок exe, Window.Icon - значок в панели задач. -->
     <Resource Include="Assets\app.ico" />
+  </ItemGroup>
+
+
+  <ItemGroup>
+    <!-- WinForms нужен только ради NotifyIcon; в неявных using он конфликтует
+         с System.Windows.Application из WPF. Импортируется точечно в TrayIcon. -->
+    <Using Remove="System.Windows.Forms" />
   </ItemGroup>
 
 </Project>

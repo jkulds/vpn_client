@@ -5,7 +5,12 @@ using SplitVpn.Models;
 
 namespace SplitVpn.Services;
 
-public sealed record ConfigBuildResult(string Json, string ClashSecret, IReadOnlyList<string> Warnings);
+public sealed record ConfigBuildResult(
+    string Json,
+    string ClashSecret,
+    IReadOnlyList<string> Warnings,
+    /// <summary>Id профиля -> tag outbound'а. По этим именам сервер зовётся в clash_api.</summary>
+    IReadOnlyDictionary<string, string> TagByProfileId);
 
 /// <summary>
 /// Собирает config.json для sing-box из настроек приложения.
@@ -24,6 +29,7 @@ public sealed class SingBoxConfigBuilder
     private readonly IReadOnlySet<string>? _availableRuleSets;
     private readonly IReadOnlyDictionary<string, int> _xrayPorts;
     private readonly string? _xrayPath;
+    private readonly IReadOnlyCollection<string> _xrayServers;
 
     /// <param name="availableRuleSets">
     /// Теги наборов, файлы которых лежат в кеше. null - считать доступными все.
@@ -41,12 +47,14 @@ public sealed class SingBoxConfigBuilder
         bool modernSyntax,
         IReadOnlySet<string>? availableRuleSets = null,
         IReadOnlyDictionary<string, int>? xrayPorts = null,
-        string? xrayPath = null)
+        string? xrayPath = null,
+        IReadOnlyCollection<string>? xrayServers = null)
     {
         _modern = modernSyntax;
         _availableRuleSets = availableRuleSets;
         _xrayPorts = xrayPorts ?? new Dictionary<string, int>();
         _xrayPath = xrayPath;
+        _xrayServers = xrayServers ?? Array.Empty<string>();
     }
 
     /// <summary>Наборы, нужные текущим правилам - для предварительной загрузки в кеш.</summary>
@@ -98,7 +106,7 @@ public sealed class SingBoxConfigBuilder
             },
             ["dns"] = BuildDns(s, channelNames, defaultOutbound),
             ["inbounds"] = BuildInbounds(s),
-            ["outbounds"] = BuildOutbounds(s, tagByProfileId, warnings),
+            ["outbounds"] = BuildOutbounds(s, tagByProfileId, warnings, out var usableProfileIds),
             ["route"] = BuildRoute(s, channelNames, defaultOutbound, warnings),
             ["experimental"] = new JsonObject
             {
@@ -116,7 +124,14 @@ public sealed class SingBoxConfigBuilder
         };
 
         var json = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
-        return new ConfigBuildResult(json, secret, warnings);
+        // В карту тегов попадают только те, что реально есть в конфиге: иначе замер задержки
+        // спрашивает ядро про несуществующий outbound и показывает «нет ответа» вместо
+        // честного «сервер не собран».
+        var actualTags = tagByProfileId
+            .Where(kv => usableProfileIds.Contains(kv.Key))
+            .ToDictionary(kv => kv.Key, kv => kv.Value);
+
+        return new ConfigBuildResult(json, secret, warnings, actualTags);
     }
 
     // ---------- inbounds ----------
@@ -158,11 +173,12 @@ public sealed class SingBoxConfigBuilder
 
     // ---------- outbounds ----------
 
-    private JsonArray BuildOutbounds(AppSettings s, Dictionary<string, string> tagByProfileId, List<string> warnings)
+    private JsonArray BuildOutbounds(AppSettings s, Dictionary<string, string> tagByProfileId, List<string> warnings, out HashSet<string> usableProfileIds)
     {
         var arr = new JsonArray();
 
         var usable = new HashSet<string>();
+        usableProfileIds = usable;
 
         var selectedKeys = s.Channels
             .Where(c => !c.AutoFastest)
@@ -180,7 +196,7 @@ public sealed class SingBoxConfigBuilder
                 continue;
             }
 
-            if (p.RequiresXray)
+            if (p.UsesXray)
             {
                 if (!_xrayPorts.TryGetValue(p.Id, out var port))
                 {
@@ -263,7 +279,7 @@ public sealed class SingBoxConfigBuilder
                     // Причин две и они разные: сервер вообще не поддерживается либо
                     // поддерживается, но через сайдкар, который не поднялся.
                     var why = reason
-                              ?? (selected.RequiresXray
+                              ?? (selected.UsesXray
                                   ? "нужен сайдкар Xray, а он не запущен"
                                   : "причина не определена");
 
@@ -485,6 +501,18 @@ public sealed class SingBoxConfigBuilder
 
         var rules = new JsonArray();
 
+        // Первым делом - домены серверов сайдкара, локальным резолвером.
+        // Xray резолвит адрес своего сервера сам, запрос перехватывается TUN и по общим
+        // правилам ушёл бы в DNS канала, то есть обратно в Xray: круг замыкается,
+        // и соединения рвутся без внятной причины.
+        var xrayDomains = new JsonArray();
+        foreach (var address in _xrayServers)
+            if (!System.Net.IPAddress.TryParse(address, out _))
+                xrayDomains.Add(address);
+
+        if (xrayDomains.Count > 0)
+            rules.Add(new JsonObject { ["domain"] = xrayDomains, ["server"] = "dns-local" });
+
         // Резолв должен идти через тот же канал, что и трафик приложения,
         // иначе провайдер канала по умолчанию видит все запрашиваемые домены.
         foreach (var r in s.AppRules.Where(r => r.Enabled && !string.IsNullOrWhiteSpace(r.Value)))
@@ -588,6 +616,11 @@ public sealed class SingBoxConfigBuilder
             });
         }
 
+        // Правила по процессу мало: сопоставление владельца соединения на Windows срабатывает
+        // не всегда ("failed to search process" в журнале ядра). Адреса серверов сайдкара
+        // выводим из туннеля ещё и по назначению - это уже не зависит от поиска процесса.
+        AddXrayServerBypass(rules);
+
         if (s.BlockQuic)
         {
             var quic = new JsonObject { ["network"] = "udp", ["port"] = new JsonArray(443) };
@@ -678,6 +711,31 @@ public sealed class SingBoxConfigBuilder
         if (_modern) route["default_domain_resolver"] = new JsonObject { ["server"] = "dns-local" };
 
         return route;
+    }
+
+    /// <summary>
+    /// Выводит адреса серверов сайдкара из туннеля по назначению: домены отдельно, IP отдельно.
+    /// </summary>
+    private void AddXrayServerBypass(JsonArray rules)
+    {
+        if (_xrayServers.Count == 0) return;
+
+        var domains = new JsonArray();
+        var ips = new JsonArray();
+
+        foreach (var address in _xrayServers)
+        {
+            if (System.Net.IPAddress.TryParse(address, out var ip))
+                ips.Add($"{ip}/{(ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6 ? 128 : 32)}");
+            else
+                domains.Add(address);
+        }
+
+        if (domains.Count > 0)
+            rules.Add(new JsonObject { ["domain"] = domains, ["outbound"] = RouteTargets.Direct });
+
+        if (ips.Count > 0)
+            rules.Add(new JsonObject { ["ip_cidr"] = ips, ["outbound"] = RouteTargets.Direct });
     }
 
     private void ApplyAction(JsonObject rule, string target)

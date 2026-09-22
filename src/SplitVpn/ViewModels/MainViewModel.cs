@@ -21,6 +21,7 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
     private readonly ClashApiClient _clash = new();
     private readonly RuleSetCache _ruleSets = new();
     private readonly XrayProcessService _xray = new();
+    private IReadOnlyDictionary<string, string> _tagByProfileId = new Dictionary<string, string>();
     private readonly Queue<string> _logLines = new();
     private readonly ConcurrentQueue<string> _pendingLog = new();
     private readonly DispatcherTimer _logTimer;
@@ -70,6 +71,7 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
         SaveCommand = new RelayCommand(Save);
         OpenConfigFolderCommand = new RelayCommand(() => OpenFolder(SettingsStore.RootDir));
         OpenLogFolderCommand = new RelayCommand(() => OpenFolder(FileLog.Dir));
+        CheckAllServersCommand = new AsyncRelayCommand(CheckAllServersAsync, () => IsRunning);
         ImportFromHappCommand = new RelayCommand(ImportFromHapp, () => HappImporter.IsInstalled);
 
         _logTimer = new DispatcherTimer(DispatcherPriority.Background)
@@ -127,12 +129,23 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
     public RelayCommand SaveCommand { get; }
     public RelayCommand OpenConfigFolderCommand { get; }
     public RelayCommand OpenLogFolderCommand { get; }
+    public AsyncRelayCommand CheckAllServersCommand { get; }
     public RelayCommand ImportFromHappCommand { get; }
 
     public bool IsRunning
     {
         get => _isRunning;
-        private set { if (Set(ref _isRunning, value)) Raise(nameof(ConnectButtonText)); }
+        private set
+        {
+            if (!Set(ref _isRunning, value)) return;
+
+            Raise(nameof(ConnectButtonText));
+
+            // Состояние приходит из фонового события ядра, а CommandManager переспрашивает
+            // CanExecute только по вводу пользователя - без этого кнопки остаются серыми,
+            // пока не шевельнёшь мышью.
+            System.Windows.Input.CommandManager.InvalidateRequerySuggested();
+        }
     }
 
     public string ConnectButtonText => IsRunning ? "Отключить" : "Подключить";
@@ -177,6 +190,7 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
             AppendLog($"[!] Не найден sing-box.exe. Укажите путь в поле «Ядро» или положите файл рядом с {AppContext.BaseDirectory}");
 
         _ = RunAutoUpdateLoopAsync(_shutdown.Token);
+        _ = RunChannelCheckLoopAsync(_shutdown.Token);
     }
 
     private async Task RunAutoUpdateLoopAsync(CancellationToken ct)
@@ -449,6 +463,12 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
 
             p.SubscriptionName = sub?.Name ?? ProxyProfile.ManualGroup;
 
+            // Порядок важен: признак сайдкара влияет на вывод о поддержке.
+            p.NeedsSynthesizedXray =
+                !p.RequiresXray &&
+                !string.IsNullOrWhiteSpace(p.SourceLink) &&
+                CoreCapabilities.IsXrayOnlyTransport(p.Network);
+
             CoreCapabilities.IsSupported(p, out var reason);
             p.UnsupportedReason = reason;
         }
@@ -470,18 +490,39 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
         if (IsRunning) _ = ApplySelectionLiveAsync();
     }
 
-    /// <summary>Переключение сервера на живом ядре - без разрыва TUN.</summary>
+    /// <summary>
+    /// Переключение сервера на живом ядре - без разрыва TUN. Возможно не всегда: если
+    /// выбранного сервера нет в текущем конфиге (например он на Xray, а сайдкар поднимается
+    /// только при запуске), ядро перезапускается само - иначе выбор молча ни на что не влияет.
+    /// </summary>
     private async Task ApplySelectionLiveAsync()
     {
+        var restartNeeded = new List<string>();
+
         foreach (var ch in Channels)
         {
             if (ch.AutoFastest || ch.Selected is null) continue;
 
-            var ok = await _clash.SelectAsync(ch.Name, ch.Selected.Name, _shutdown.Token).ConfigureAwait(false);
-            AppendLog(ok
-                ? $"[канал] '{ch.Name}' -> '{ch.Selected.Name}'"
-                : $"[канал] не удалось переключить '{ch.Name}' на лету, изменения применятся после переподключения");
+            // Обращаться нужно тегом outbound'а: одинаковые имена серверов в конфиге
+            // разводятся суффиксом, и имя профиля тегу уже не равно.
+            if (!_tagByProfileId.TryGetValue(ch.Selected.Id, out var tag))
+            {
+                restartNeeded.Add($"'{ch.Name}' -> '{ch.Selected.Name}'");
+                continue;
+            }
+
+            var ok = await _clash.SelectAsync(ch.Name, tag, _shutdown.Token).ConfigureAwait(false);
+
+            if (ok) AppendLog($"[канал] '{ch.Name}' -> '{ch.Selected.Name}'");
+            else restartNeeded.Add($"'{ch.Name}' -> '{ch.Selected.Name}'");
         }
+
+        if (restartNeeded.Count == 0) return;
+
+        AppendLog($"[канал] на лету не применить ({string.Join(", ", restartNeeded)}) - перезапускаю ядро");
+
+        await Task.Run(() => { _core.Stop(); _xray.StopAll(); }).ConfigureAwait(false);
+        await ConnectAsync().ConfigureAwait(false);
     }
 
     // ---------- запуск ядра ----------
@@ -507,9 +548,10 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
 
         var available = await EnsureRuleSetsAsync().ConfigureAwait(false);
         var (xrayPorts, xrayPath) = await StartXraySidecarsAsync().ConfigureAwait(false);
+        var xrayServers = AllXrayServerAddresses();
 
         var modern = await _core.DetectModernSyntaxAsync(corePath).ConfigureAwait(false);
-        var build = new SingBoxConfigBuilder(modern, available, xrayPorts, xrayPath).Build(Settings);
+        var build = new SingBoxConfigBuilder(modern, available, xrayPorts, xrayPath, xrayServers).Build(Settings);
 
         foreach (var w in build.Warnings) AppendLog($"[конфиг] {w}");
 
@@ -532,6 +574,7 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
 
         _clash.Port = Settings.ClashApiPort;
         _clash.Secret = build.ClashSecret;
+        _tagByProfileId = build.TagByProfileId;
 
         Dispatch(() =>
         {
@@ -601,6 +644,155 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
         return files.Where(f => f.Available).Select(f => f.Tag).ToHashSet();
     }
 
+    // ---------- проверка доступности ----------
+
+    /// <summary>
+    /// Меряет задержку по всем серверам. Пути два: то, что есть в конфиге, меряет само ядро
+    /// через clash_api; серверы на Xray, для которых постоянный сайдкар не поднят, измеряются
+    /// временным сайдкаром - иначе после перехода провайдера на XHTTP проверять было бы почти
+    /// нечего, ведь в конфиг попадает лишь выбранное в каналах.
+    /// </summary>
+    private async Task CheckAllServersAsync()
+    {
+        if (!IsRunning) { AppendLog("[пинг] ядро не запущено"); return; }
+
+        var viaCore = Settings.Profiles.Where(p => _tagByProfileId.ContainsKey(p.Id)).ToList();
+
+        var viaProbe = Settings.Profiles
+            .Where(p => p.UsesXray && !_tagByProfileId.ContainsKey(p.Id))
+            .ToList();
+
+        var xrayPath = viaProbe.Count > 0 ? XrayProcessService.Resolve(Settings.XrayPath) : null;
+
+        if (viaProbe.Count > 0 && xrayPath is null)
+        {
+            AppendLog($"[пинг] {viaProbe.Count} серверов на Xray пропущены: xray.exe не найден");
+            viaProbe.Clear();
+        }
+
+        var total = viaCore.Count + viaProbe.Count;
+        var unreachable = Settings.Profiles.Count - total;
+
+        if (total == 0)
+        {
+            AppendLog("[пинг] нечего проверять: ни один сервер не попал в конфиг. " +
+                      "Выберите сервер в канале и переподключитесь.");
+            return;
+        }
+
+        AppendLog($"[пинг] проверяю {total}: через ядро {viaCore.Count}, временным сайдкаром {viaProbe.Count}" +
+                  (unreachable > 0 ? $"; не проверить: {unreachable}" : ""));
+
+        Dispatch(() => Status = $"Проверка серверов (0/{total})");
+
+        // Каждый замер - реальный трафик, а замер через сайдкар ещё и процесс Xray.
+        // Десять одновременно: меньше - полный проход по полусотне серверов растягивается
+        // на минуту, больше - заметный всплеск памяти на ровном месте.
+        using var limit = new SemaphoreSlim(10);
+        using var probe = new XrayLatencyProbe();
+        var done = 0;
+
+        async Task RunAsync(ProxyProfile p, Func<Task<int?>> measure)
+        {
+            await limit.WaitAsync(_shutdown.Token).ConfigureAwait(false);
+            try
+            {
+                var ms = await measure().ConfigureAwait(false);
+
+                Dispatch(() =>
+                {
+                    p.LatencyMs = ms;
+                    p.LatencyChecked = true;
+
+                    var n = Interlocked.Increment(ref done);
+                    if (n % 5 == 0 || n == total) Status = $"Проверка серверов ({n}/{total})";
+                });
+            }
+            finally
+            {
+                limit.Release();
+            }
+        }
+
+        var tasks = viaCore
+            .Select(p => RunAsync(p, () => _clash.DelayAsync(_tagByProfileId[p.Id], _shutdown.Token)))
+            .Concat(viaProbe.Select(p => RunAsync(p, async () =>
+            {
+                string config;
+                try
+                {
+                    config = p.RequiresXray
+                        ? p.XrayConfigJson!
+                        : XrayConfigSynthesizer.FromLink(p.SourceLink!);
+                }
+                catch (Exception)
+                {
+                    return null;
+                }
+
+                // Живые серверы отвечают за 0.5-5 с, так что восьми секунд хватает,
+                // а мёртвый не тормозит очередь дольше необходимого.
+                return await probe
+                    .MeasureAsync(xrayPath!, config, TimeSpan.FromSeconds(8), _shutdown.Token)
+                    .ConfigureAwait(false);
+            })));
+
+        try { await Task.WhenAll(tasks).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return; }
+
+        var measured = viaCore.Concat(viaProbe).ToList();
+        var alive = measured.Count(p => p.LatencyMs is not null);
+        var best = measured.Where(p => p.LatencyMs is not null).OrderBy(p => p.LatencyMs).FirstOrDefault();
+
+        AppendLog($"[пинг] доступно {alive} из {total}" +
+                  (best is null ? "" : $", быстрейший: '{best.Name}' {best.LatencyMs} мс"));
+
+        Dispatch(() => Status = IsRunning ? "Подключено" : "Отключено");
+    }
+
+    /// <summary>Периодический замер только по выбранным серверам каналов - их единицы.</summary>
+    private async Task CheckChannelsAsync()
+    {
+        if (!IsRunning) return;
+
+        foreach (var ch in Channels)
+        {
+            var profile = ch.Selected;
+            if (profile is null || !_tagByProfileId.TryGetValue(profile.Id, out var tag)) continue;
+
+            var ms = await _clash.DelayAsync(tag, _shutdown.Token).ConfigureAwait(false);
+
+            Dispatch(() =>
+            {
+                profile.LatencyMs = ms;
+                profile.LatencyChecked = true;
+            });
+
+            if (ms is null)
+                AppendLog($"[пинг] канал '{ch.Name}': сервер '{profile.Name}' не отвечает");
+        }
+    }
+
+    private async Task RunChannelCheckLoopAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(Math.Max(15, Settings.ChannelCheckSeconds)), ct)
+                    .ConfigureAwait(false);
+
+                if (Settings.ChannelCheckSeconds <= 0) continue;
+
+                await CheckChannelsAsync().ConfigureAwait(false);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // штатное завершение
+        }
+    }
+
     /// <summary>Остановка ядра ждёт выхода процесса - на UI-потоке это подвешивало окно.</summary>
     private async Task DisconnectAsync()
     {
@@ -626,13 +818,13 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
         var wanted = Settings.Channels
             .Where(c => !c.AutoFastest && !string.IsNullOrWhiteSpace(c.SelectedProfileKey))
             .Select(c => Settings.Profiles.FirstOrDefault(p => p.StableKey == c.SelectedProfileKey))
-            .Where(p => p is { RequiresXray: true })
+            .Where(p => p is { UsesXray: true })
             .DistinctBy(p => p!.Id)
             .ToList();
 
         var autoWithXray = Settings.Channels
             .Where(c => c.AutoFastest)
-            .Where(_ => Settings.Profiles.Any(p => p.RequiresXray))
+            .Where(_ => Settings.Profiles.Any(p => p.UsesXray))
             .ToList();
 
         foreach (var ch in autoWithXray)
@@ -652,14 +844,49 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
 
         foreach (var p in wanted)
         {
+            string config;
+            try
+            {
+                // Профиль из подписки несёт готовый конфиг, профиль из ссылки - нет,
+                // для него конфиг синтезируется, иначе XHTTP по ссылке не запустить.
+                config = p!.RequiresXray
+                    ? p.XrayConfigJson!
+                    : XrayConfigSynthesizer.FromLink(p.SourceLink!);
+            }
+            catch (Exception ex)
+            {
+                AppendLog($"[!] xray '{p!.Name}': конфиг не собран из ссылки - {ex.Message}");
+                continue;
+            }
+
             var instance = await _xray
-                .StartAsync(xrayPath, p!.Id, p.Name, p.XrayConfigJson!)
+                .StartAsync(xrayPath, p.Id, p.Name, config)
                 .ConfigureAwait(false);
 
             if (instance is not null) ports[p.Id] = instance.SocksPort;
         }
 
         return (ports, xrayPath);
+    }
+
+    /// <summary>
+    /// Адреса всех серверов, которые обслуживаются через Xray. Выводятся из туннеля целиком,
+    /// а не только запущенные: проверка доступности поднимает сайдкары на время замера,
+    /// и их соединения TUN перехватил бы точно так же - Xray завернул бы сам себя.
+    /// </summary>
+    private List<string> AllXrayServerAddresses()
+    {
+        var result = new List<string>();
+
+        foreach (var p in Settings.Profiles.Where(p => p.UsesXray))
+        {
+            if (p.RequiresXray)
+                result.AddRange(XrayEndpoints.Extract(p.XrayConfigJson!));
+            else if (!string.IsNullOrWhiteSpace(p.Server))
+                result.Add(p.Server);
+        }
+
+        return result.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
     }
 
     private async Task CheckConfigAsync()

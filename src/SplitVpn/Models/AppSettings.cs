@@ -14,6 +14,30 @@ public sealed class AppSettings : NotifyBase
     private int _mixedPort = 2080;
     private int _clashApiPort = 9095;
 
+    /// <summary>
+    /// Период автопроверки каналов, секунды. 0 - не проверять. Меньше 15 не имеет смысла:
+    /// каждый замер идёт реальным запросом через туннель.
+    /// </summary>
+    public int ChannelCheckSeconds
+    {
+        get => _channelCheckSeconds;
+        set => Set(ref _channelCheckSeconds, value <= 0 ? 0 : Math.Clamp(value, 15, 3600));
+    }
+
+    private int _channelCheckSeconds = 60;
+
+    /// <summary>Сворачивать в область уведомлений вместо панели задач.</summary>
+    public bool MinimizeToTray { get => _minimizeToTray; set => Set(ref _minimizeToTray, value); }
+
+    /// <summary>
+    /// Закрытие окна прячет приложение в трей, а не завершает его. Ядро при этом продолжает
+    /// работать - выход только через меню значка.
+    /// </summary>
+    public bool CloseToTray { get => _closeToTray; set => Set(ref _closeToTray, value); }
+
+    private bool _minimizeToTray = true;
+    private bool _closeToTray = true;
+
     /// <summary>Путь к sing-box.exe. Относительный резолвится от папки приложения.</summary>
     public string CorePath { get => _corePath; set => Set(ref _corePath, value); }
 

@@ -70,6 +70,7 @@ public static class ShareLinkParser
             if (string.IsNullOrWhiteSpace(profile.Name))
                 profile.Name = $"{profile.Server}:{profile.ServerPort}";
 
+            profile.SourceLink = link;
             return true;
         }
         catch (Exception ex)

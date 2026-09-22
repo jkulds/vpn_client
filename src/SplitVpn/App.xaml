@@ -18,6 +18,7 @@
             <infra:BoolToVisibilityConverter x:Key="BoolToVis" />
             <infra:InverseBoolToVisibilityConverter x:Key="NotBoolToVis" />
             <infra:InverseBoolConverter x:Key="NotBool" />
+            <infra:LatencyBrushConverter x:Key="LatencyBrush" />
 
             <!--
                 Список с fallback: имена серверов из подписок содержат эмодзи, которых нет в Segoe UI.
@@ -28,8 +29,20 @@
             <Style x:Key="GroupHeader" TargetType="TextBlock">
                 <Setter Property="FontWeight" Value="SemiBold" />
                 <Setter Property="FontSize" Value="11" />
-                <Setter Property="Margin" Value="0,8,0,3" />
+                <Setter Property="Margin" Value="0,5,0,2" />
                 <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+            </Style>
+
+
+            <!--
+                Тема WPF-UI даёт элементам списка щедрые отступы: на списке из десятков
+                серверов это съедает экран. BasedOn обязателен - без него подменится шаблон.
+            -->
+            <Style x:Key="CompactListItem" TargetType="ListBoxItem"
+                   BasedOn="{StaticResource {x:Type ListBoxItem}}">
+                <Setter Property="Padding" Value="6,1" />
+                <Setter Property="Margin" Value="0,0,0,1" />
+                <Setter Property="MinHeight" Value="0" />
             </Style>
 
             <Style x:Key="Card" TargetType="Border">
@@ -37,8 +50,8 @@
                 <Setter Property="BorderBrush" Value="{DynamicResource CardStrokeColorDefaultBrush}" />
                 <Setter Property="BorderThickness" Value="1" />
                 <Setter Property="CornerRadius" Value="8" />
-                <Setter Property="Padding" Value="14" />
-                <Setter Property="Margin" Value="0,0,0,12" />
+                <Setter Property="Padding" Value="10" />
+                <Setter Property="Margin" Value="0,0,0,8" />
             </Style>
 
             <!--
@@ -48,7 +61,7 @@
             -->
             <Style x:Key="SectionTitle" TargetType="ui:TextBlock">
                 <Setter Property="FontTypography" Value="BodyStrong" />
-                <Setter Property="Margin" Value="0,0,0,10" />
+                <Setter Property="Margin" Value="0,0,0,6" />
             </Style>
 
             <Style x:Key="Caption" TargetType="TextBlock">

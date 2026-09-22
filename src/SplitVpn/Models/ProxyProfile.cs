@@ -26,6 +26,13 @@ public sealed class ProxyProfile : NotifyBase
     public string? Password { get; set; }
     public string? Method { get; set; }
 
+    /// <summary>
+    /// Исходная share-ссылка, если профиль пришёл из неё. Хранится целиком намеренно:
+    /// параметры транспорта (xhttp mode/extra и подобные) модель не описывает, а для
+    /// сборки конфига сайдкару они нужны дословно.
+    /// </summary>
+    public string? SourceLink { get; set; }
+
     /// <summary>Обфускация Hysteria2. Единственное поддерживаемое значение - salamander.</summary>
     public string? ObfsType { get; set; }
 
@@ -88,8 +95,61 @@ public sealed class ProxyProfile : NotifyBase
     [JsonIgnore]
     public bool RequiresXray => !string.IsNullOrWhiteSpace(XrayConfigJson);
 
+    /// <summary>
+    /// Транспорт умеет Xray, но не умеет sing-box: конфиг сайдкару синтезируется из
+    /// <see cref="SourceLink"/>. Проставляется снаружи - знание о возможностях ядер
+    /// живёт в Services, тянуть его в модель незачем.
+    /// </summary>
+    [JsonIgnore]
+    public bool NeedsSynthesizedXray { get; set; }
+
+    /// <summary>Любой профиль, для которого нужен процесс Xray.</summary>
+    [JsonIgnore]
+    public bool UsesXray => RequiresXray || NeedsSynthesizedXray;
+
     /// <summary>Сколько прокси-outbound'ов внутри конфига Xray. Больше одного - балансировщик.</summary>
     public int XrayHostCount { get; set; }
+
+    private int? _latencyMs;
+    private bool _latencyChecked;
+
+    /// <summary>Задержка последнего замера. null при непройденной проверке. В файл не пишется.</summary>
+    [JsonIgnore]
+    public int? LatencyMs
+    {
+        get => _latencyMs;
+        set
+        {
+            if (!Set(ref _latencyMs, value)) return;
+            Raise(nameof(LatencyText));
+            Raise(nameof(LatencyState));
+        }
+    }
+
+    /// <summary>Замер вообще проводился - без этого не отличить «не проверяли» от «не ответил».</summary>
+    [JsonIgnore]
+    public bool LatencyChecked
+    {
+        get => _latencyChecked;
+        set
+        {
+            if (!Set(ref _latencyChecked, value)) return;
+            Raise(nameof(LatencyText));
+            Raise(nameof(LatencyState));
+        }
+    }
+
+    [JsonIgnore]
+    public string LatencyText => !LatencyChecked ? "" : LatencyMs is { } ms ? $"{ms} мс" : "нет ответа";
+
+    /// <summary>ok / slow / fail / unknown - для раскраски в списке.</summary>
+    [JsonIgnore]
+    public string LatencyState =>
+        !LatencyChecked ? "unknown"
+        : LatencyMs is null ? "fail"
+        : LatencyMs < 300 ? "ok"
+        : LatencyMs < 800 ? "slow"
+        : "bad";
 
     /// <summary>Заполнено, если ядро такой сервер не потянет. В settings.json не пишется.</summary>
     [JsonIgnore]
