@@ -281,6 +281,9 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
         {
             p.GroupName = group;
             if (Settings.Profiles.Any(x => x.StableKey == p.StableKey)) continue;
+
+            // До вставки: группу CollectionView назначает один раз, при добавлении элемента.
+            ApplyDerivedFields(p);
             Settings.Profiles.Add(p);
             added++;
         }
@@ -383,39 +386,27 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
     /// Заменяет серверы подписки, сохраняя привязки каналов: выбор переносится по
     /// <see cref="ProxyProfile.StableKey"/>, а если сервер исчез - по имени.
     /// </summary>
+    /// <remarks>
+    /// Пока список перестраивается, ComboBox каналов пишет в привязку null (подробности
+    /// в <see cref="SubscriptionProfileUpdater"/>). Реагировать на это сохранением и
+    /// переключением на лету нельзя: ядро перезапускалось посреди обновления, а в настройки
+    /// улетал пустой выбор.
+    /// </remarks>
     private void ReplaceProfiles(Subscription sub, List<ProxyProfile> fresh)
     {
-        var oldKeys = Settings.Profiles
-            .Where(p => p.SubscriptionId == sub.Id)
-            .Select(p => p.StableKey)
-            .ToHashSet();
-
-        var insertAt = -1;
-
-        for (var i = Settings.Profiles.Count - 1; i >= 0; i--)
+        _suppressSelectionEvents = true;
+        try
         {
-            if (Settings.Profiles[i].SubscriptionId != sub.Id) continue;
-            Settings.Profiles.RemoveAt(i);
-            insertAt = i;
+            SubscriptionProfileUpdater.Replace(
+                Settings.Profiles, Settings.Channels, sub, fresh, ApplyDerivedFields, AppendLog);
         }
-
-        // Свежие серверы встают на место старых, а не в конец: иначе после каждого обновления
-        // группы в списке перетасовывались, а с ними и порядок outbound'ов в конфиге.
-        if (insertAt < 0) insertAt = Settings.Profiles.Count;
-        for (var j = 0; j < fresh.Count; j++) Settings.Profiles.Insert(insertAt + j, fresh[j]);
-
-        foreach (var ch in Settings.Channels)
+        finally
         {
-            if (ch.SelectedProfileKey is null || !oldKeys.Contains(ch.SelectedProfileKey)) continue;
-            if (fresh.Any(p => p.StableKey == ch.SelectedProfileKey)) continue;
-
-            var oldName = ch.SelectedProfileKey.Split('|').ElementAtOrDefault(1);
-            var replacement = fresh.FirstOrDefault(p => p.Name == oldName) ?? fresh.FirstOrDefault();
-
-            ch.SelectedProfileKey = replacement?.StableKey;
-            AppendLog($"[подписки] канал '{ch.Name}': сервер переназначен на '{replacement?.Name ?? "-"}'");
+            _suppressSelectionEvents = false;
         }
     }
+
+    private bool _suppressSelectionEvents;
 
     private void RemoveSubscription()
     {
@@ -503,24 +494,35 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
     /// <summary>Заголовки групп и пометки о поддержке живут только в памяти.</summary>
     private void RefreshProfileGroupNames()
     {
-        foreach (var p in Settings.Profiles)
-        {
-            var sub = p.SubscriptionId is null
-                ? null
-                : Settings.Subscriptions.FirstOrDefault(s => s.Id == p.SubscriptionId);
+        foreach (var p in Settings.Profiles) ApplyDerivedFields(p);
+    }
 
-            p.SubscriptionName = sub?.Name
-                                 ?? (string.IsNullOrWhiteSpace(p.GroupName) ? ProxyProfile.ManualGroup : p.GroupName.Trim());
+    /// <summary>
+    /// Заголовок группы и пометки о поддержке для одного сервера.
+    /// </summary>
+    /// <remarks>
+    /// Новым серверам это обязано выставляться до вставки в список. CollectionView без live
+    /// shaping раскладывает элемент по группам один раз, при добавлении, и смену свойства
+    /// потом не замечает. Раньше заголовок проставлялся после вставки, и после каждого
+    /// обновления подписки её серверы висели в группе «Добавлено вручную» до перезапуска.
+    /// </remarks>
+    private void ApplyDerivedFields(ProxyProfile p)
+    {
+        var sub = p.SubscriptionId is null
+            ? null
+            : Settings.Subscriptions.FirstOrDefault(s => s.Id == p.SubscriptionId);
 
-            // Порядок важен: признак сайдкара влияет на вывод о поддержке.
-            p.NeedsSynthesizedXray =
-                !p.RequiresXray &&
-                !string.IsNullOrWhiteSpace(p.SourceLink) &&
-                CoreCapabilities.IsXrayOnlyTransport(p.Network);
+        p.SubscriptionName = sub?.Name
+                             ?? (string.IsNullOrWhiteSpace(p.GroupName) ? ProxyProfile.ManualGroup : p.GroupName.Trim());
 
-            CoreCapabilities.IsSupported(p, out var reason);
-            p.UnsupportedReason = reason;
-        }
+        // Порядок важен: признак сайдкара влияет на вывод о поддержке.
+        p.NeedsSynthesizedXray =
+            !p.RequiresXray &&
+            !string.IsNullOrWhiteSpace(p.SourceLink) &&
+            CoreCapabilities.IsXrayOnlyTransport(p.Network);
+
+        CoreCapabilities.IsSupported(p, out var reason);
+        p.UnsupportedReason = reason;
     }
 
     private void OnSettingsPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -535,6 +537,8 @@ public sealed partial class MainViewModel : NotifyBase, IGroupExpansionStore, ID
 
     private void OnChannelSelectionChanged()
     {
+        if (_suppressSelectionEvents) return;
+
         Save();
         if (IsRunning) _ = ApplySelectionLiveAsync();
     }
